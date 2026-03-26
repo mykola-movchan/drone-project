@@ -2,8 +2,90 @@ import sys
 import socket
 from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QGridLayout, 
                              QVBoxLayout, QHBoxLayout, QLineEdit, QCheckBox, 
-                             QSlider, QFrame, QLabel, QSizePolicy)
+                             QSlider, QFrame, QLabel, QSizePolicy, QDialog)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QKeyEvent
+
+# --- PATTERN DESIGNER DIALOG ---
+class PatternDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("8x8 LED Pattern Designer")
+        self.setFixedSize(400, 500)
+        self.pattern_string = ""
+        
+        # Color states: 0: off, 1: red, 2: blue, 3: purple
+        self.colors = {
+            0: ("#444", "0"),      # Off
+            1: ("#ff0000", "r"),   # Red
+            2: ("#0000ff", "b"),   # Blue
+            3: ("#800080", "p")    # Purple
+        }
+        
+        # Grid state (8x8)
+        self.grid_state = [0] * 64
+        self.buttons = []
+        
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        info_label = QLabel("Click pixels to cycle colors:\nGray (Off) -> Red -> Blue -> Purple")
+        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_label.setStyleSheet("color: white; font-weight: bold;")
+        layout.addWidget(info_label)
+
+        # 8x8 Grid
+        grid_widget = QWidget()
+        self.grid_layout = QGridLayout(grid_widget)
+        self.grid_layout.setSpacing(2)
+        
+        for i in range(64):
+            btn = QPushButton()
+            btn.setFixedSize(40, 40)
+            btn.setStyleSheet(f"background-color: {self.colors[0][0]}; border: 1px solid #222;")
+            btn.clicked.connect(lambda checked, idx=i: self.cycle_color(idx))
+            self.grid_layout.addWidget(btn, i // 8, i % 8)
+            self.buttons.append(btn)
+            
+        layout.addWidget(grid_widget)
+
+        # Control Buttons
+        controls = QHBoxLayout()
+        
+        btn_clear = QPushButton("Clear All")
+        btn_clear.clicked.connect(self.clear_grid)
+        btn_clear.setStyleSheet("background-color: #f44336; color: white;")
+        
+        btn_ok = QPushButton("Send to Drone")
+        btn_ok.clicked.connect(self.accept_pattern)
+        btn_ok.setStyleSheet("background-color: #4CAF50; color: white;")
+        
+        controls.addWidget(btn_clear)
+        controls.addWidget(btn_ok)
+        layout.addLayout(controls)
+        
+        self.setLayout(layout)
+        self.setStyleSheet("background-color: #1a2a44;")
+
+    def cycle_color(self, idx):
+        # Cycle through 0, 1, 2, 3
+        self.grid_state[idx] = (self.grid_state[idx] + 1) % 4
+        color_hex = self.colors[self.grid_state[idx]][0]
+        self.buttons[idx].setStyleSheet(f"background-color: {color_hex}; border: 1px solid #222;")
+
+    def clear_grid(self):
+        for i in range(64):
+            self.grid_state[i] = 0
+            self.buttons[i].setStyleSheet(f"background-color: {self.colors[0][0]}; border: 1px solid #222;")
+
+    def accept_pattern(self):
+        # Construct string like 'rrr000bbb...'
+        result = "".join([self.colors[state][1] for state in self.grid_state])
+        self.pattern_string = result
+        self.accept()
 
 # --- WORKER THREAD FOR TELLO COMMUNICATION ---
 class TelloWorker(QThread):
@@ -14,14 +96,13 @@ class TelloWorker(QThread):
         self.tello_address = ('192.168.10.1', 8889)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self.sock.bind(('', 9000)) # Local port for receiving responses
+            self.sock.bind(('', 9000)) 
         except Exception as e:
             print(f"Bind error: {e}")
         self.sock.settimeout(3.0)
         self.current_command = None
 
     def run(self):
-        """This runs in a background thread"""
         if self.current_command:
             try:
                 print(f"Sending: {self.current_command}")
@@ -44,18 +125,47 @@ class TelloFullPanel(QWidget):
         self.worker = TelloWorker()
         self.worker.response_received.connect(self.handle_response)
         self.initUI()
-        
-        # Send SDK command on launch
         self.send_cmd('command')
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def handle_response(self, text):
-        print(f"Tello says: {text}")
         self.terminal_display.setText(f" > {text}")
         self.setWindowTitle(f"Tello - Status: {text}")
 
     def send_cmd(self, cmd):
-        """Helper to call worker from UI"""
         self.worker.send(cmd)
+
+    def open_pattern_designer(self):
+        dialog = PatternDialog(self)
+        if dialog.exec():
+            # When OK is pressed, send the generated pattern
+            pattern_cmd = f"EXT mled g {dialog.pattern_string}"
+            self.send_cmd(pattern_cmd)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        key = event.key()
+        if isinstance(self.focusWidget(), QLineEdit):
+            super().keyPressEvent(event)
+            return
+
+        commands = {
+            Qt.Key.Key_Space: 'takeoff',
+            Qt.Key.Key_L: 'land',
+            Qt.Key.Key_0: 'emergency',
+            Qt.Key.Key_Up: 'forward 50',
+            Qt.Key.Key_Down: 'back 50',
+            Qt.Key.Key_Left: 'left 50',
+            Qt.Key.Key_Right: 'right 50',
+            Qt.Key.Key_W: 'up 50',
+            Qt.Key.Key_S: 'down 50',
+            Qt.Key.Key_A: 'ccw 90',
+            Qt.Key.Key_D: 'cw 90'
+        }
+
+        if key in commands:
+            self.send_cmd(commands[key])
+        else:
+            super().keyPressEvent(event)
 
     def initUI(self):
         self.setWindowTitle('Tello Command Center')
@@ -76,23 +186,21 @@ class TelloFullPanel(QWidget):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        # --- TERMINAL RESPONSE ---
+        # Terminal
         self.terminal_display = QLabel(" > Initializing...")
         self.terminal_display.setObjectName("Terminal")
         self.terminal_display.setFixedHeight(40)
         main_layout.addWidget(self.terminal_display)
 
-        # --- SECTION 1: FLIGHT CONTROLS ---
+        # Section 1: Movement
         section1 = QGridLayout()
         self.setup_grid_columns(section1, 3)
-        
         btn_data1 = [
-            ('🚁 Takeoff 🚁', 0, 0, 'takeoff'), ('⬆️ Forward ⬆️', 0, 1, 'forward 50'), ('🅿️ Land 🅿️', 0, 2, 'land'),
-            ('⬅️ Left ⬅️', 1, 0, 'left 50'), ('🚦 Command 🚦', 1, 1, 'command'), ('➡️ Right ➡️', 1, 2, 'right 50'),
-            ('👆 Up 👆', 2, 0, 'up 50'), ('⬇️ Back ⬇️', 2, 1, 'back 50'), ('👇 Down 👇', 2, 2, 'down 50'),
-            ('🔄 Rotate ccw 🔄', 3, 0, 'ccw 90'), ('🔄 Rotate cw 🔄', 3, 2, 'cw 90')
+            ('🚁 Takeoff (Space) 🚁', 0, 0, 'takeoff'), ('⬆️ Forward (Up) ⬆️', 0, 1, 'forward 50'), ('🅿️ Land (L) 🅿️', 0, 2, 'land'),
+            ('⬅️ Left (Left) ⬅️', 1, 0, 'left 50'), ('🚦 Command 🚦', 1, 1, 'command'), ('➡️ Right (Right) ➡️', 1, 2, 'right 50'),
+            ('👆 Up (W) 👆', 2, 0, 'up 50'), ('⬇️ Back (Down) ⬇️', 2, 1, 'back 50'), ('👇 Down (S) 👇', 2, 2, 'down 50'),
+            ('🔄 Rotate ccw (A) 🔄', 3, 0, 'ccw 90'), ('🔄 Rotate cw (D) 🔄', 3, 2, 'cw 90')
         ]
-        
         for label, row, col, cmd in btn_data1:
             btn = self.create_expanding_btn(label)
             btn.clicked.connect(lambda checked, c=cmd: self.send_cmd(c))
@@ -101,20 +209,18 @@ class TelloFullPanel(QWidget):
         emergency_ml_container = QWidget()
         em_layout = QHBoxLayout(emergency_ml_container)
         em_layout.setContentsMargins(0, 0, 0, 0)
-        btn_emergency = QPushButton('🚨 EMERGENCY 🚨')
+        btn_emergency = QPushButton('🚨 EMERGENCY (0) 🚨')
         btn_emergency.clicked.connect(lambda: self.send_cmd('emergency'))
         btn_ml = QPushButton('Start ML Model')
         em_layout.addWidget(btn_emergency)
         em_layout.addWidget(btn_ml)
         section1.addWidget(emergency_ml_container, 3, 1)
-
         main_layout.addLayout(section1)
         main_layout.addWidget(self.create_separator())
 
-        # --- SECTION 2: ACROBATICS & MOTORS ---
+        # Section 2: Acrobatics
         section2 = QGridLayout()
         self.setup_grid_columns(section2, 3)
-        
         motor_container = QWidget()
         motor_lay = QHBoxLayout(motor_container)
         motor_lay.setContentsMargins(0, 0, 0, 0)
@@ -133,7 +239,6 @@ class TelloFullPanel(QWidget):
 
         flips = [("⬅️ Flip left ⬅️", 1, 0, 'flip l'), ("🏈 Throw&Fly 🏈", 1, 1, 'throwfly'), ("➡️ Flip right ➡️", 1, 2, 'flip r'),
                  ("📸 Take photo 📸", 2, 0, 'takephoto'), ("⬇️ Flip back ⬇️", 2, 1, 'flip b')]
-        
         for lbl, r, c, cmd in flips:
             btn = self.create_expanding_btn(lbl)
             btn.clicked.connect(lambda checked, cmd=cmd: self.send_cmd(cmd))
@@ -147,29 +252,26 @@ class TelloFullPanel(QWidget):
         speed_layout.addWidget(QLabel("Speed:"))
         speed_layout.addWidget(speed_slider)
         section2.addWidget(speed_container, 2, 2)
-
         main_layout.addLayout(section2)
         main_layout.addWidget(self.create_separator())
 
-        # --- SECTION 3: LED & TEXT INPUTS ---
+        # Section 3: LED & Display
         section3 = QGridLayout()
         self.setup_grid_columns(section3, 3)
-        
         led_data = [
-            ('🔴 Red LED 🔴', 0, 0, 'EXT led 255 0 0'), 
-            ('🟢 Green LED 🟢', 0, 1, 'EXT led 0 255 0'), 
-            ('🔵 Blue LED 🔵', 0, 2, 'EXT led 0 0 255'),
-            ('🔵 Pulse Blue 🔵', 1, 0, 'EXT led br 1 0 0 255'), 
-            ('⚫ Turn OFF LED ⚫', 1, 1, 'EXT led 0 0 0'), 
-            ('🚔 POLICE! 🚔', 1, 2, 'EXT led bl 5 0 0 255 255 0 0') # Red flashing
+            ('🔴 Red LED 🔴', 0, 0, 'led 255 0 0'), 
+            ('🟢 Green LED 🟢', 0, 1, 'led 0 255 0'), 
+            ('🔵 Blue LED 🔵', 0, 2, 'led 0 0 255'),
+            ('🔵 Pulse Blue 🔵', 1, 0, 'led 0 0 255 2'), 
+            ('⚫ Turn OFF LED ⚫', 1, 1, 'led 0 0 0'), 
+            ('🚔 POLICE! 🚔', 1, 2, 'led 255 0 0 5')
         ]
-        
         for label, row, col, cmd in led_data:
             btn = self.create_expanding_btn(label)
             btn.clicked.connect(lambda checked, c=cmd: self.send_cmd(c))
             section3.addWidget(btn, row, col)
 
-        # Text Input Group
+        # Text Input
         text_display_container = QWidget()
         text_display_layout = QHBoxLayout(text_display_container)
         text_display_layout.setContentsMargins(0, 0, 0, 0)
@@ -180,9 +282,12 @@ class TelloFullPanel(QWidget):
         text_display_layout.addWidget(btn_text, 3)
         section3.addWidget(text_display_container, 2, 0)
         
-        section3.addWidget(self.create_expanding_btn("Display pattern"), 2, 1)
+        # New Pattern Logic
+        btn_pattern = self.create_expanding_btn("Display pattern")
+        btn_pattern.clicked.connect(self.open_pattern_designer)
+        section3.addWidget(btn_pattern, 2, 1)
         
-        # Char Input Group
+        # Char Input
         char_input_container = QWidget()
         char_input_layout = QHBoxLayout(char_input_container)
         char_input_layout.setContentsMargins(0, 0, 0, 0)
@@ -203,6 +308,7 @@ class TelloFullPanel(QWidget):
     def create_expanding_btn(self, label):
         btn = QPushButton(label)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return btn
 
     def create_separator(self):
