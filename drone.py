@@ -9,10 +9,13 @@ from PyQt6.QtGui import QKeyEvent
 
 # --- PATTERN DESIGNER DIALOG ---
 class PatternDialog(QDialog):
+    # Static variable to persist saved pattern between dialog opens
+    last_saved_state = None 
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("8x8 LED Pattern Designer")
-        self.setFixedSize(400, 520)
+        self.setFixedSize(420, 560)
         self.pattern_string = ""
         
         self.colors = {
@@ -30,10 +33,25 @@ class PatternDialog(QDialog):
         layout = QVBoxLayout()
         layout.setSpacing(10)
         
-        info_label = QLabel("Click pixels to cycle colors:\nGray (Off) -> Red -> Blue -> Purple")
-        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setStyleSheet("color: white; font-weight: bold;")
-        layout.addWidget(info_label)
+        # Header with Info and "Display Saved"
+        header_layout = QHBoxLayout()
+        info_label = QLabel("Click pixels to cycle colors:\nGray -> Red -> Blue -> Purple")
+        info_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold;")
+        
+        self.btn_load_saved = QPushButton("Display Saved")
+        self.btn_load_saved.setFixedSize(110, 35)
+        self.btn_load_saved.setStyleSheet("""
+            background-color: #009688; color: white; border-radius: 4px; font-size: 11px;
+        """)
+        self.btn_load_saved.clicked.connect(self.load_saved_pattern)
+        # Disable if nothing is saved yet
+        if PatternDialog.last_saved_state is None:
+            self.btn_load_saved.setEnabled(False)
+            self.btn_load_saved.setAlpha = 0.5
+
+        header_layout.addWidget(info_label, 1)
+        header_layout.addWidget(self.btn_load_saved)
+        layout.addLayout(header_layout)
 
         grid_widget = QWidget()
         self.grid_layout = QGridLayout(grid_widget)
@@ -41,7 +59,7 @@ class PatternDialog(QDialog):
         
         for i in range(64):
             btn = QPushButton()
-            btn.setFixedSize(38, 38)
+            btn.setFixedSize(40, 40)
             btn.setStyleSheet(f"background-color: {self.colors[0][0]}; border: 1px solid #222;")
             btn.clicked.connect(lambda checked, idx=i: self.cycle_color(idx))
             self.grid_layout.addWidget(btn, i // 8, i % 8)
@@ -49,16 +67,23 @@ class PatternDialog(QDialog):
             
         layout.addWidget(grid_widget)
 
+        # Footer Controls
         controls = QHBoxLayout()
+        
         btn_clear = QPushButton("Clear All")
         btn_clear.clicked.connect(self.clear_grid)
         btn_clear.setStyleSheet("background-color: #f44336; color: white; min-height: 40px;")
         
+        btn_save = QPushButton("Save Pattern")
+        btn_save.clicked.connect(self.save_current_pattern)
+        btn_save.setStyleSheet("background-color: #2196F3; color: white; min-height: 40px;")
+
         btn_ok = QPushButton("Send to Drone")
         btn_ok.clicked.connect(self.accept_pattern)
         btn_ok.setStyleSheet("background-color: #4CAF50; color: white; min-height: 40px;")
         
         controls.addWidget(btn_clear)
+        controls.addWidget(btn_save)
         controls.addWidget(btn_ok)
         layout.addLayout(controls)
         
@@ -67,13 +92,27 @@ class PatternDialog(QDialog):
 
     def cycle_color(self, idx):
         self.grid_state[idx] = (self.grid_state[idx] + 1) % 4
+        self.update_button_style(idx)
+
+    def update_button_style(self, idx):
         color_hex = self.colors[self.grid_state[idx]][0]
         self.buttons[idx].setStyleSheet(f"background-color: {color_hex}; border: 1px solid #222;")
 
     def clear_grid(self):
         for i in range(64):
             self.grid_state[i] = 0
-            self.buttons[i].setStyleSheet(f"background-color: {self.colors[0][0]}; border: 1px solid #222;")
+            self.update_button_style(i)
+
+    def save_current_pattern(self):
+        PatternDialog.last_saved_state = list(self.grid_state)
+        self.btn_load_saved.setEnabled(True)
+        self.btn_load_saved.setStyleSheet("background-color: #009688; color: white; border-radius: 4px; font-size: 11px;")
+
+    def load_saved_pattern(self):
+        if PatternDialog.last_saved_state is not None:
+            self.grid_state = list(PatternDialog.last_saved_state)
+            for i in range(64):
+                self.update_button_style(i)
 
     def accept_pattern(self):
         result = "".join([self.colors[state][1] for state in self.grid_state])
