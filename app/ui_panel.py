@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import (QWidget, QPushButton, QGridLayout, QVBoxLayout,
                              QHBoxLayout, QLineEdit, QSlider, QFrame, QLabel,
                              QSizePolicy, QDialog, QCheckBox)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, QTimer, QRectF
 
 
 class StickVisualizer(QWidget):
@@ -119,6 +119,69 @@ class PatternDialog(QDialog):
         self.accept()
 
 
+class MLOverlayWidget(QWidget):
+    """
+    Transparent widget that floats on top of the video QLabel.
+    Draws ML predictions using QPainter — crisp, resolution-independent,
+    never touches the video frames themselves.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._results: list = []    # list of (class_name, confidence)
+
+    def update_results(self, results: list) -> None:
+        self._results = results
+        self.update()   # schedules a repaint
+
+    def paintEvent(self, event):
+        if not self._results:
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        font = QFont("Helvetica Neue", 13, QFont.Weight.Bold)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+
+        pad_x = 14
+        pad_y = 10
+        line_gap = 6
+        line_h = fm.height() + line_gap
+
+        # Measure the widest label to size the box
+        max_w = max(fm.horizontalAdvance(f"{n}  {c * 100:.1f}%") for n, c in self._results)
+        box_w = max_w + pad_x * 2
+        box_h = pad_y * 2 + line_h * len(self._results) - line_gap
+
+        margin = 12
+        x = self.width() - box_w - margin
+        y = self.height() - box_h - margin
+
+        # Background
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 170))
+        p.drawRoundedRect(QRectF(x, y, box_w, box_h), 8, 8)
+
+        # Border
+        p.setPen(QPen(QColor(0, 212, 255, 200), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(x, y, box_w, box_h), 8, 8)
+
+        # Labels
+        for i, (name, conf) in enumerate(self._results):
+            text = f"{name}  {conf * 100:.1f}%"
+            ty = y + pad_y + line_h * i + fm.ascent()
+            color = QColor(0, 255, 120) if i == 0 else QColor(180, 180, 180)
+            p.setPen(color)
+            p.drawText(int(x + pad_x), int(ty), text)
+
+
 class TelloFullPanel(QWidget):
     def __init__(self, worker, status_thread, video_thread, gamepad, ml_worker=None):
         super().__init__()
@@ -185,6 +248,11 @@ class TelloFullPanel(QWidget):
         self.video_display.setObjectName("VideoDisplay")
         self.video_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # Transparent overlay for ML labels — floats on top of video_display
+        self.ml_overlay = MLOverlayWidget(self.video_display)
+        self.ml_overlay.hide()
+
         mid_layout.addWidget(self.video_display, 7)
 
         m_pnl = QFrame()
@@ -367,6 +435,8 @@ class TelloFullPanel(QWidget):
         pixmap = QPixmap.fromImage(q_img)
         scaled = pixmap.scaled(self.video_display.size(), Qt.AspectRatioMode.KeepAspectRatio)
         self.video_display.setPixmap(scaled)
+        # Keep overlay covering the full video widget
+        self.ml_overlay.resize(self.video_display.size())
 
     def video_on(self):
         self.send_cmd('streamon')
@@ -410,12 +480,13 @@ class TelloFullPanel(QWidget):
             self.btn_ml.setText("🤖 ML: ON")
             self.btn_ml.setStyleSheet(
                 "background-color: #2e7d32; color: white; min-height: 35px; border: none;")
+            self.ml_overlay.show()
         else:
             self.btn_ml.setText("🤖 ML: OFF")
             self.btn_ml.setStyleSheet(
                 "background-color: #455a64; color: white; min-height: 35px; border: none;")
-            # Clear the overlay so nothing lingers on screen
-            self.video_thread.set_prediction([])
+            self.ml_overlay.update_results([])
+            self.ml_overlay.hide()
 
     def keyPressEvent(self, e):
         keys = {Qt.Key.Key_Space: 'takeoff', Qt.Key.Key_L: 'land',

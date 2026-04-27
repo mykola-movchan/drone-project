@@ -44,17 +44,6 @@ class TelloVideoThread(QThread):
         self.ml_enabled: bool = False
         self.ml_worker = None               # injected by main.py
 
-        self._label_lock = threading.Lock()
-        self._current_results: list = []    # list of (class_name, confidence)
-
-    # ------------------------------------------------------------------
-    # Called via prediction_ready signal from MLWorker (Qt main thread)
-    # ------------------------------------------------------------------
-
-    def set_prediction(self, results: list) -> None:
-        with self._label_lock:
-            self._current_results = results
-
     # ------------------------------------------------------------------
     # Thread body
     # ------------------------------------------------------------------
@@ -83,38 +72,6 @@ class TelloVideoThread(QThread):
                 # --- Submit to ML worker (non-blocking, never waits) ---
                 if self.ml_enabled and self.ml_worker is not None:
                     self.ml_worker.submit_frame(frame)
-
-                # --- Draw all predictions as overlay ---
-                if self.ml_enabled:
-                    with self._label_lock:
-                        results = list(self._current_results)
-
-                    if results:
-                        h, w = frame.shape[:2]
-                        pad = 8
-                        line_h = 26
-                        box_w = 210
-                        box_h = pad * 2 + line_h * len(results)
-                        x1 = w - box_w - 10
-                        y1 = h - box_h - 10
-                        x2 = w - 10
-                        y2 = h - 10
-
-                        # Dark background + cyan border
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), -1)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 212, 255), 1)
-
-                        for i, (name, conf) in enumerate(results):
-                            text = f"{name}  {conf * 100:.1f}%"
-                            y = y1 + pad + line_h * i + 16
-                            # Top result in green, rest in grey
-                            color = (0, 255, 0) if i == 0 else (180, 180, 180)
-                            cv2.putText(
-                                frame, text,
-                                (x1 + pad, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                                color, 1, cv2.LINE_AA
-                            )
 
                 # --- Convert BGR → QImage and emit ---
                 h, w, _ = frame.shape

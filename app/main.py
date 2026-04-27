@@ -32,12 +32,11 @@ def main():
     # Inject worker into video thread so it can submit frames
     video_thread.ml_worker = ml_worker
 
-    # Route ML predictions back to the video thread for overlay drawing
-    # (signal is emitted on Qt main thread — set_prediction is thread-safe)
-    ml_worker.prediction_ready.connect(video_thread.set_prediction)
-
-    # 4. UI
+    # 4. UI — must be created before connecting ML signal so ml_overlay exists
     window = TelloFullPanel(worker, status_thread, video_thread, gamepad, ml_worker)
+
+    # Route ML predictions to the overlay widget (Qt main thread, no locking needed)
+    ml_worker.prediction_ready.connect(window.ml_overlay.update_results)
 
     # 5. Connect signals
     worker.response_received.connect(window.handle_response)
